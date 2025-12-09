@@ -250,25 +250,32 @@ def process_single_pdf(
 ) -> Dict[str, Any]:
     """
     Process a single PDF file through the ingestion pipeline.
-    
+
     Returns:
         Dictionary with processing results (doc_id, chunk_count, figure_count, etc.)
     """
     import hashlib
     import re
-    
+
     def slugify(value: str) -> str:
         value = value.lower()
         value = re.sub(r"[^a-z0-9]+", "-", value)
         return value.strip("-") or "document"
-    
-    def hash_path(path: Path) -> str:
-        return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:8]
-    
-    # Generate document ID
+
+    def hash_content(path: Path) -> str:
+        """Generate SHA256 hash of file content (first 8 chars)."""
+        sha256 = hashlib.sha256()
+        with open(path, 'rb') as f:
+            # Read in chunks to handle large files
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        return sha256.hexdigest()[:12]
+
+    # Generate document ID based on content hash (not filename)
+    # This ensures same content = same doc_id regardless of filename
+    content_hash = hash_content(pdf_path)
     file_stem = slugify(pdf_path.stem)
-    path_hash = hash_path(pdf_path)
-    doc_id = f"{file_stem}-{path_hash}"
+    doc_id = f"{file_stem}-{content_hash}"
     
     logging.info(f"Processing {pdf_path.name} → {doc_id}")
     

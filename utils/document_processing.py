@@ -403,15 +403,46 @@ def attach_embeddings(
         record["embedding"] = np.asarray(embedding, dtype=np.float32).tolist()
 
 
-def persist_records(collection: Collection, records: Sequence[dict[str, Any]]) -> None:
-    """Persist chunk records to MongoDB collection."""
+def persist_records(collection: Collection, records: Sequence[dict[str, Any]], upsert: bool = True) -> None:
+    """
+    Persist chunk records to MongoDB collection.
+
+    Args:
+        collection: MongoDB collection
+        records: List of chunk records to persist
+        upsert: If True, update existing documents; if False, insert only
+    """
     if not records:
         return
-    try:
-        collection.insert_many(records, ordered=False)
-    except BulkWriteError as exc:
-        logging.error("MongoDB bulk write encountered an error: %s", exc)
-        raise
+
+    if upsert:
+        # Use bulk upsert operations based on chunk_id
+        from pymongo import UpdateOne
+        operations = [
+            UpdateOne(
+                {"chunk_id": record["chunk_id"]},
+                {"$set": record},
+                upsert=True
+            )
+            for record in records
+        ]
+        try:
+            result = collection.bulk_write(operations, ordered=False)
+            logging.info(
+                "Upsert complete: %d inserted, %d modified",
+                result.upserted_count,
+                result.modified_count
+            )
+        except BulkWriteError as exc:
+            logging.error("MongoDB bulk write encountered an error: %s", exc)
+            raise
+    else:
+        # Original insert-only behavior
+        try:
+            collection.insert_many(records, ordered=False)
+        except BulkWriteError as exc:
+            logging.error("MongoDB bulk write encountered an error: %s", exc)
+            raise
 
 
 def write_metadata_doc(

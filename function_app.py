@@ -136,9 +136,16 @@ async def list_sharepoint_files(folder_path: str) -> List[Dict[str, Any]]:
         if folder_items and folder_items.value:
             for item in folder_items.value:
                 if item.name.lower().endswith('.pdf'):
+                    # Get download URL from additional_data (newer SDK) or direct attribute (older SDK)
+                    download_url = None
+                    if hasattr(item, 'additional_data') and item.additional_data:
+                        download_url = item.additional_data.get('@microsoft.graph.downloadUrl')
+                    if not download_url and hasattr(item, 'microsoft_graph_download_url'):
+                        download_url = item.microsoft_graph_download_url
+
                     pdf_files.append({
                         'name': item.name,
-                        'download_url': item.microsoft_graph_download_url,
+                        'download_url': download_url,
                         'size': item.size,
                         'id': item.id
                     })

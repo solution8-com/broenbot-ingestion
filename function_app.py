@@ -241,6 +241,7 @@ def initialize_processing_components():
 
 def process_single_pdf(
     pdf_path: Path,
+    source_file_name: str,
     chunker,
     voyage_client,
     mongo_collection,
@@ -250,6 +251,16 @@ def process_single_pdf(
 ) -> Dict[str, Any]:
     """
     Process a single PDF file through the ingestion pipeline.
+
+    Args:
+        pdf_path: Path to downloaded PDF file
+        source_file_name: Original SharePoint filename (e.g., "TI58... Rev. 02.pdf")
+        chunker: HybridChunker instance
+        voyage_client: VoyageAI client
+        mongo_collection: MongoDB collection
+        converter: Document converter
+        image_root: Root directory for images
+        metadata_root: Root directory for metadata
 
     Returns:
         Dictionary with processing results (doc_id, chunk_count, figure_count, etc.)
@@ -263,7 +274,7 @@ def process_single_pdf(
         return value.strip("-") or "document"
 
     def hash_content(path: Path) -> str:
-        """Generate SHA256 hash of file content (first 8 chars)."""
+        """Generate SHA256 hash of file content (first 12 chars)."""
         sha256 = hashlib.sha256()
         with open(path, 'rb') as f:
             # Read in chunks to handle large files
@@ -276,32 +287,33 @@ def process_single_pdf(
     content_hash = hash_content(pdf_path)
     file_stem = slugify(pdf_path.stem)
     doc_id = f"{file_stem}-{content_hash}"
-    
-    logging.info(f"Processing {pdf_path.name} → {doc_id}")
-    
+
+    logging.info(f"Processing {source_file_name} → {doc_id}")
+
     # Convert PDF
     result = converter.convert(source=str(pdf_path))
     doc = result.document
-    
+
     # Extract figures
     figure_dir = image_root / doc_id
     figure_map = extract_figures(doc, doc_id, figure_dir)
     figure_map = filter_figures_by_height(figure_map)
-    
+
     figure_refs_light, figure_binary_map = build_light_and_binary_maps(
         figure_map, image_root=image_root
     )
-    
-    # Prepare chunks
+
+    # Prepare chunks with source filename for revision tracking
     records = prepare_chunk_records(
         doc=doc,
         doc_id=doc_id,
         source_path=pdf_path,
+        source_file_name=source_file_name,
         chunker=chunker,
         figure_refs_light=figure_refs_light,
         figure_binary_map=figure_binary_map
     )
-    
+
     # Generate embeddings
     if records:
         embeddings = embed_chunks(
@@ -312,10 +324,10 @@ def process_single_pdf(
             output_dtype=VOYAGE_OUTPUT_DTYPE
         )
         attach_embeddings(records, embeddings)
-        
-        # Persist to MongoDB
+
+        # Persist to MongoDB (simple insert, n8n handles deletions)
         persist_records(mongo_collection, records)
-    
+
     # Write metadata
     metadata_path = metadata_root / f"{doc_id}.json"
     write_metadata_doc(
@@ -327,12 +339,12 @@ def process_single_pdf(
         voyage_model=VOYAGE_MODEL,
         conversion_strategy="docling"
     )
-    
+
     return {
         'doc_id': doc_id,
         'chunk_count': len(records),
         'figure_count': len(figure_refs_light),
-        'source_file': pdf_path.name,
+        'source_file': source_file_name,
         'strategy': 'docling'
     }
 
@@ -413,10 +425,11 @@ async def ingest_sharepoint_folder(req: func.HttpRequest) -> func.HttpResponse:
                 try:
                     # Download file
                     pdf_path = await download_sharepoint_file(file_info, temp_path)
-                    
-                    # Process PDF
+
+                    # Process PDF with original filename
                     result = process_single_pdf(
                         pdf_path=pdf_path,
+                        source_file_name=file_info['name'],
                         chunker=chunker,
                         voyage_client=voyage_client,
                         mongo_collection=mongo_collection,
@@ -424,9 +437,9 @@ async def ingest_sharepoint_folder(req: func.HttpRequest) -> func.HttpResponse:
                         image_root=image_root,
                         metadata_root=metadata_root
                     )
-                    
+
                     results.append(result)
-                    
+
                 except Exception as e:
                     logging.error(f"Error processing {file_info['name']}: {str(e)}")
                     results.append({
@@ -505,41 +518,44 @@ async def ingest_single_pdf(req: func.HttpRequest) -> func.HttpResponse:
             metadata_root.mkdir(parents=True, exist_ok=True)
             
             # Download file based on source type
+            source_file_name = None
+
             if source_type == 'sharepoint':
                 folder_path = req_body.get('folder_path', SHAREPOINT_FOLDER_PATH)
                 file_name = req_body.get('file_name')
-                
+
                 if not file_name:
                     return func.HttpResponse(
                         json.dumps({'error': 'file_name is required for SharePoint source'}),
                         status_code=400,
                         mimetype='application/json'
                     )
-                
+
                 # List files and find the target
                 pdf_files = await list_sharepoint_files(folder_path)
                 file_info = next((f for f in pdf_files if f['name'] == file_name), None)
-                
+
                 if not file_info:
                     return func.HttpResponse(
                         json.dumps({'error': f'File {file_name} not found in {folder_path}'}),
                         status_code=404,
                         mimetype='application/json'
                     )
-                
+
                 pdf_path = await download_sharepoint_file(file_info, temp_path)
+                source_file_name = file_info['name']
             
             elif source_type == 'blob':
                 container_name = req_body.get('container_name')
                 blob_name = req_body.get('blob_name')
-                
+
                 if not all([container_name, blob_name]):
                     return func.HttpResponse(
                         json.dumps({'error': 'container_name and blob_name required for blob source'}),
                         status_code=400,
                         mimetype='application/json'
                     )
-                
+
                 # Download from Azure Blob Storage
                 connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
                 if not connection_string:
@@ -548,25 +564,28 @@ async def ingest_single_pdf(req: func.HttpRequest) -> func.HttpResponse:
                         status_code=500,
                         mimetype='application/json'
                     )
-                
+
                 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
                 blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
-                
+
                 pdf_path = temp_path / blob_name
                 with open(pdf_path, 'wb') as f:
                     download_stream = blob_client.download_blob()
                     f.write(download_stream.readall())
-            
+
+                source_file_name = blob_name
+
             else:
                 return func.HttpResponse(
                     json.dumps({'error': f'Unsupported source_type: {source_type}'}),
                     status_code=400,
                     mimetype='application/json'
                 )
-            
-            # Process the PDF
+
+            # Process the PDF with original filename
             result = process_single_pdf(
                 pdf_path=pdf_path,
+                source_file_name=source_file_name,
                 chunker=chunker,
                 voyage_client=voyage_client,
                 mongo_collection=mongo_collection,

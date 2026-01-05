@@ -90,6 +90,41 @@ def hash_path(path: Path) -> str:
     return hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:8]
 
 
+def parse_revision_from_filename(filename: str) -> tuple[str, str | None]:
+    """
+    Extract base document name and revision from filename.
+
+    Handles patterns:
+    - "Document Name Rev. 01.pdf" → ("Document Name.pdf", "01")
+    - "Document Name Rev.02.pdf" → ("Document Name.pdf", "02")
+    - "Document Name.pdf" → ("Document Name.pdf", None)
+
+    Args:
+        filename: Full filename including extension
+
+    Returns:
+        Tuple of (base_document_name, revision)
+        - base_document_name: Filename without revision suffix
+        - revision: Extracted revision string (e.g., "01", "02") or None
+    """
+    # Pattern matches: Rev. 01, Rev.01, Rev. 1, Rev.1 (case insensitive)
+    pattern = r'[.\s]rev\.?\s*(\d{1,2})'
+
+    match = re.search(pattern, filename, re.IGNORECASE)
+
+    if match:
+        # Extract revision number
+        revision = match.group(1).zfill(2)  # Normalize to 2 digits (e.g., "1" → "01")
+
+        # Remove revision suffix from filename
+        base_name = re.sub(pattern, '', filename, flags=re.IGNORECASE)
+
+        return base_name.strip(), revision
+
+    # No revision found
+    return filename, None
+
+
 def filter_figures_by_height(
     figure_map: dict[str, dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
@@ -238,37 +273,45 @@ def prepare_chunk_records(
     doc: DoclingDocument,
     doc_id: str,
     source_path: Path,
+    source_file_name: str,
     chunker,
     figure_refs_light: dict[str, dict[str, Any]],
     figure_binary_map: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
     Prepare chunk records from a document for embedding and storage.
-    
+
     Args:
         doc: DoclingDocument to chunk
         doc_id: Unique document identifier
         source_path: Path to source PDF file
+        source_file_name: Original SharePoint filename (e.g., "TI58... Rev. 02.pdf")
         chunker: HybridChunker instance
         figure_refs_light: Lightweight figure reference map
         figure_binary_map: Binary figure data map
-    
+
     Returns:
         List of chunk record dictionaries
     """
+    # Parse revision from filename
+    base_document_name, revision = parse_revision_from_filename(source_file_name)
+
     records: list[dict[str, Any]] = []
     chunks = list(chunker.chunk(dl_doc=doc))
-    
+
     for idx, chunk in enumerate(chunks):
         enriched_text = chunker.contextualize(chunk=chunk)
         doc_items = getattr(chunk.meta, "doc_items", []) or []
         figure_refs = figure_subset(doc_items, figure_refs_light)
-        
+
         record = {
             "chunk_id": f"{doc_id}::chunk-{idx:04d}",
             "document_id": doc_id,
             "chunk_index": idx,
             "text": enriched_text,
+            "source_file_name": source_file_name,
+            "base_document_name": base_document_name,
+            "revision": revision,
             "metadata": {
                 "source_pdf": str(source_path),
                 "pages": getattr(chunk.meta, "pages", []),
@@ -279,7 +322,7 @@ def prepare_chunk_records(
             "binary": build_chunk_binary_for_refs(figure_refs, figure_binary_map),
         }
         records.append(record)
-    
+
     return records
 
 
@@ -403,46 +446,25 @@ def attach_embeddings(
         record["embedding"] = np.asarray(embedding, dtype=np.float32).tolist()
 
 
-def persist_records(collection: Collection, records: Sequence[dict[str, Any]], upsert: bool = True) -> None:
+def persist_records(collection: Collection, records: Sequence[dict[str, Any]]) -> None:
     """
     Persist chunk records to MongoDB collection.
+
+    Simplified to insert-only. n8n handles deletion of old revisions before calling this.
 
     Args:
         collection: MongoDB collection
         records: List of chunk records to persist
-        upsert: If True, update existing documents; if False, insert only
     """
     if not records:
         return
 
-    if upsert:
-        # Use bulk upsert operations based on chunk_id
-        from pymongo import UpdateOne
-        operations = [
-            UpdateOne(
-                {"chunk_id": record["chunk_id"]},
-                {"$set": record},
-                upsert=True
-            )
-            for record in records
-        ]
-        try:
-            result = collection.bulk_write(operations, ordered=False)
-            logging.info(
-                "Upsert complete: %d inserted, %d modified",
-                result.upserted_count,
-                result.modified_count
-            )
-        except BulkWriteError as exc:
-            logging.error("MongoDB bulk write encountered an error: %s", exc)
-            raise
-    else:
-        # Original insert-only behavior
-        try:
-            collection.insert_many(records, ordered=False)
-        except BulkWriteError as exc:
-            logging.error("MongoDB bulk write encountered an error: %s", exc)
-            raise
+    try:
+        result = collection.insert_many(records, ordered=False)
+        logging.info("Inserted %d chunk(s) into MongoDB", len(result.inserted_ids))
+    except BulkWriteError as exc:
+        logging.error("MongoDB bulk write encountered an error: %s", exc)
+        raise
 
 
 def write_metadata_doc(

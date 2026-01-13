@@ -1,4 +1,4 @@
-name: Docker Image Publish - Registry:Dockerhub
+name: Docker Image Publish - Dockerhub
 
 on:
   push:

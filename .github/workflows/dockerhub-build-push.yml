@@ -1,0 +1,56 @@
+name: Docker Image Publish - Registry:Dockerhub
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # - name: Configure Application Settings
+      #   if: success()
+      #   uses: azure/CLI@v1
+      #   with:
+      #     inlineScript: |
+      #       az functionapp config appsettings set \
+      #         --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
+      #         --resource-group docling-ingest-rg \
+      #         --settings \
+      #           SHAREPOINT_TENANT_ID="${{ secrets.SHAREPOINT_TENANT_ID }}" \
+      #           SHAREPOINT_CLIENT_ID="${{ secrets.SHAREPOINT_CLIENT_ID }}" \
+      #           SHAREPOINT_CLIENT_SECRET="${{ secrets.SHAREPOINT_CLIENT_SECRET }}" \
+      #           SHAREPOINT_SITE_URL="${{ secrets.SHAREPOINT_SITE_URL }}" \
+      #           SHAREPOINT_FOLDER_PATH="Shared Documents/PDFs" \
+      #           VOYAGE_API_KEY="${{ secrets.VOYAGE_API_KEY }}" \
+      #           MONGODB_URI="${{ secrets.MONGODB_URI }}" \
+      #           MONGODB_DB="docling_ingestion" \
+      #           MONGODB_COLLECTION="pdf_chunks" \
+      #           CHUNK_MAX_TOKENS="768" \
+      #           VOYAGE_OUTPUT_DIM="1024"
+
+      - name: Build Docker image
+        run: |
+          docker build . --file Dockerfile \
+            --tag docker.io/dawgone/broenbot-ingestion:latest
+
+      - name: Push Docker image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push docker.io/dawgone/broenbot-ingestion:latest

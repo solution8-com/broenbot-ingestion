@@ -296,7 +296,7 @@ def process_single_pdf(
 
     # Extract figures
     figure_dir = image_root / doc_id
-    figure_map = extract_figures(doc, doc_id, figure_dir)
+    figure_map, ref_to_figure_id = extract_figures(doc, doc_id, figure_dir)
     figure_map = filter_figures_by_height(figure_map)
 
     figure_refs_light, figure_binary_map = build_light_and_binary_maps(
@@ -311,7 +311,8 @@ def process_single_pdf(
         source_file_name=source_file_name,
         chunker=chunker,
         figure_refs_light=figure_refs_light,
-        figure_binary_map=figure_binary_map
+        figure_binary_map=figure_binary_map,
+        ref_to_figure_id=ref_to_figure_id,
     )
 
     # Generate embeddings

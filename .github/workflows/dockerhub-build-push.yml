@@ -27,9 +27,9 @@ jobs:
       - name: Build Docker image
         run: |
           docker build . --file Dockerfile \
-            --tag docker.io/dawgone/broenbot-ingestion:latest
+            --tag docker.io/dawgone/broenbot:latest
 
       - name: Push Docker image
         if: github.event_name != 'pull_request'
         run: |
-          docker push docker.io/dawgone/broenbot-ingestion:latest
+          docker push docker.io/dawgone/broenbot:latest

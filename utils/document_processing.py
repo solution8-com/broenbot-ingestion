@@ -92,38 +92,22 @@ def hash_path(path: Path) -> str:
 
 def parse_revision_from_filename(filename: str) -> tuple[str, str | None]:
     """
-    Extract base document name and revision from filename.
+    Extract base document name (TI number) from filename.
 
-    Handles patterns:
-    - "Document Name Rev. 01.pdf" → ("Document Name.pdf", "01")
-    - "Document Name Rev.02.pdf" → ("Document Name.pdf", "02")
-    - "Document Name.pdf" → ("Document Name.pdf", None)
+  Args:
+      filename: Full filename including extension
 
-    Args:
-        filename: Full filename including extension
-
-    Returns:
-        Tuple of (base_document_name, revision)
-        - base_document_name: Filename without revision suffix
-        - revision: Extracted revision string (e.g., "01", "02") or None
+  Returns:
+      Tuple of (base_document_name, None)
+      - base_document_name: TI number (e.g., "TI110", "TI99")
     """
-    # Pattern matches: Rev. 01, Rev.01, Rev. 1, Rev.1 (case insensitive)
-    pattern = r'[.\s]rev\.?\s*(\d{1,2})'
+    # Extract TI number as base document name
+    ti_match = re.search(r'TI\d+', filename, re.IGNORECASE)
+    if ti_match:
+        return ti_match.group(0).upper(), None
 
-    match = re.search(pattern, filename, re.IGNORECASE)
-
-    if match:
-        # Extract revision number
-        revision = match.group(1).zfill(2)  # Normalize to 2 digits (e.g., "1" → "01")
-
-        # Remove revision suffix from filename
-        base_name = re.sub(pattern, '', filename, flags=re.IGNORECASE)
-
-        return base_name.strip(), revision
-
-    # No revision found
-    return filename, None
-
+    # Fallback
+    return filename.replace('.pdf', '').strip(), None
 
 def filter_figures_by_height(
     figure_map: dict[str, dict[str, Any]]
@@ -309,9 +293,7 @@ def prepare_chunk_records(
             "document_id": doc_id,
             "chunk_index": idx,
             "text": enriched_text,
-            "source_file_name": source_file_name,
             "base_document_name": base_document_name,
-            "revision": revision,
             "metadata": {
                 "source_pdf": str(source_path),
                 "pages": getattr(chunk.meta, "pages", []),

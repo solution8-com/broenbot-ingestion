@@ -178,7 +178,7 @@ def extract_figures(
                   page_no_0indexed = prov_entry["page_no"]
 
       # Convert to 1-indexed page number
-      page_no = page_no_0indexed + 1
+      page_no = page_no_0indexed
 
       # Increment image count for this page
       page_image_counts[page_no] = page_image_counts.get(page_no, 0) + 1
